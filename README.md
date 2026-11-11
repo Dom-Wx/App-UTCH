@@ -15,3 +15,4 @@ Para abrir el menú interactivo de Expo (Android / iOS / Expo Go):
 cd "app UTCH"
 npx expo start
 ```
+Quien lo descargue debe correr npm install para regenerar node_modules.
