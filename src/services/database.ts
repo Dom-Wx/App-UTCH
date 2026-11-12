@@ -1,6 +1,13 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import {
+  cifrarObjetoParaStorage,
+  comparacionTiempoConstante,
+  derivarHashPassword,
+  descifrarObjetoDeStorage,
+  generarSalAleatoria,
+} from "./seguridad";
 
-export type RolUsuario = "Estudiante" | "Personal";
+export type RolUsuario = "Alumno" | "Docente";
 
 export type AccesoUTCH =
   | "Acceso 1 (Av. Cantera)"
@@ -11,65 +18,72 @@ export type CarreraOption = {
   nombre: string;
   edificio: string;
   accesoRecomendado: AccesoUTCH;
-  zonaSugeridaEstudiante: string;
+  zonaSugerida: string;
 };
 
 export const CARRERAS_UTCH: CarreraOption[] = [
   {
-    id: "mecatronica",
-    nombre: "Ing. Mecatrónica",
-    edificio: "Edificio P",
+    id: "escolares_general",
+    nombre: "Trámites / Servicios Escolares (Edificio D)",
+    edificio: "Edificio D",
     accesoRecomendado: "Acceso 1 (Av. Cantera)",
-    zonaSugeridaEstudiante: "Estudiantes Norte",
-  },
-  {
-    id: "energias",
-    nombre: "Ing. Energías Renovables",
-    edificio: "Edificio P",
-    accesoRecomendado: "Acceso 1 (Av. Cantera)",
-    zonaSugeridaEstudiante: "Estudiantes Norte",
-  },
-  {
-    id: "mantenimiento",
-    nombre: "Ing. Mantenimiento Industrial",
-    edificio: "Edificio N",
-    accesoRecomendado: "Acceso 1 (Av. Cantera)",
-    zonaSugeridaEstudiante: "Estudiantes Norte",
-  },
-  {
-    id: "negocios",
-    nombre: "Lic. Negocios y Mercadotecnia",
-    edificio: "Edificio G",
-    accesoRecomendado: "Acceso 1 (Av. Cantera)",
-    zonaSugeridaEstudiante: "Estudiantes Centro",
+    zonaSugerida: "ED",
   },
   {
     id: "ti",
     nombre: "Ing. Tecnologías de la Información",
     edificio: "Edificio I",
     accesoRecomendado: "Acceso 2 (TI / Industrial)",
-    zonaSugeridaEstudiante: "Estudiantes Sur",
+    zonaSugerida: "EI",
   },
   {
     id: "industrial",
     nombre: "Ing. Industrial",
     edificio: "Edificio K",
     accesoRecomendado: "Acceso 2 (TI / Industrial)",
-    zonaSugeridaEstudiante: "Estudiantes Sur",
+    zonaSugerida: "EI",
   },
   {
-    id: "rectoria_admin",
-    nombre: "Docente / Administrativo",
-    edificio: "Edificios E / R",
+    id: "mecatronica",
+    nombre: "Ing. Mecatrónica",
+    edificio: "Edificio P",
     accesoRecomendado: "Acceso 1 (Av. Cantera)",
-    zonaSugeridaEstudiante: "Personal L",
+    zonaSugerida: "EP",
+  },
+  {
+    id: "energias",
+    nombre: "Ing. Energías Renovables",
+    edificio: "Edificio P",
+    accesoRecomendado: "Acceso 1 (Av. Cantera)",
+    zonaSugerida: "EP",
+  },
+  {
+    id: "mantenimiento",
+    nombre: "Ing. Mantenimiento Industrial",
+    edificio: "Edificio N",
+    accesoRecomendado: "Acceso 1 (Av. Cantera)",
+    zonaSugerida: "EP",
+  },
+  {
+    id: "negocios",
+    nombre: "Lic. Negocios y Mercadotecnia",
+    edificio: "Edificio G / D",
+    accesoRecomendado: "Acceso 1 (Av. Cantera)",
+    zonaSugerida: "ED",
+  },
+  {
+    id: "docente_academico",
+    nombre: "Docente / Cuerpo Académico UTCH",
+    edificio: "Edificios D / E / R",
+    accesoRecomendado: "Acceso 1 (Av. Cantera)",
+    zonaSugerida: "ED",
   },
 ];
 
+// Objeto público seguro: NO expone password, passwordHash ni salt a la interfaz
 export type Usuario = {
   matricula: string;
   nombre: string;
-  password: string;
   rol: RolUsuario;
   carreraId: string;
   carreraNombre: string;
@@ -81,47 +95,138 @@ export type Usuario = {
   fechaRegistro: string;
 };
 
+// Registro interno en bóveda cifrada con hash PBKDF-HMAC-SHA256 y sal única
+type UsuarioBoveda = Usuario & {
+  passwordHash: string;
+  salt: string;
+};
+
 export type DatosRegistro = {
   matricula: string;
   nombre: string;
   password: string;
   rol: RolUsuario;
   carreraId: string;
-  placas: string;
-  vehiculo: string;
-  accesible: boolean;
+  placas?: string;
+  vehiculo?: string;
+  accesible?: boolean;
 };
 
-const CLAVE_USUARIOS = "@utch_park_usuarios_v1";
-const CLAVE_SESION = "@utch_park_sesion_v1";
+const CLAVE_BOVEDA_USUARIOS = "@utch_park_boveda_usuarios_v2";
+const CLAVE_USUARIOS_LEGACY = "@utch_park_usuarios_v1";
+const CLAVE_BOVEDA_SESION = "@utch_park_boveda_sesion_v2";
+const CLAVE_SESION_LEGACY = "@utch_park_sesion_v1";
 
-export async function obtenerUsuarios(): Promise<Usuario[]> {
-  const raw = await AsyncStorage.getItem(CLAVE_USUARIOS);
-  if (!raw) return [];
+// Control en memoria contra ataques de fuerza bruta (máximo 5 intentos fallidos)
+const intentosFallidosPorCuenta: Record<
+  string,
+  { conteo: number; bloqueadoHasta: number }
+> = {};
+const MAX_INTENTOS_LOGIN = 5;
+const TIEMPO_BLOQUEO_MS = 60 * 1000; // 60 segundos
 
-  const parsed: unknown = JSON.parse(raw);
-  if (
-    !Array.isArray(parsed) ||
-    parsed.some(
-      (usuario) =>
-        !usuario ||
-        typeof usuario !== "object" ||
-        typeof usuario.matricula !== "string" ||
-        typeof usuario.password !== "string"
-    )
-  ) {
-    throw new Error("Los datos de las cuentas guardadas no son válidos.");
+function normalizarRol(rol: unknown): RolUsuario {
+  if (rol === "Docente" || rol === "Personal") {
+    return "Docente";
+  }
+  return "Alumno";
+}
+
+function sanitizarUsuarioPublico(u: UsuarioBoveda): Usuario {
+  const { passwordHash: _h, salt: _s, ...publico } = u;
+  return publico;
+}
+
+async function guardarBovedaInterna(usuarios: UsuarioBoveda[]): Promise<void> {
+  const payloadCifrado = cifrarObjetoParaStorage(usuarios);
+  await AsyncStorage.setItem(CLAVE_BOVEDA_USUARIOS, payloadCifrado);
+  // Elimina cualquier rastro de la versión anterior sin cifrar
+  await AsyncStorage.removeItem(CLAVE_USUARIOS_LEGACY);
+}
+
+async function leerBovedaInterna(): Promise<UsuarioBoveda[]> {
+  const rawBoveda = await AsyncStorage.getItem(CLAVE_BOVEDA_USUARIOS);
+
+  if (rawBoveda) {
+    const descifrado = descifrarObjetoDeStorage<unknown>(rawBoveda);
+    if (!Array.isArray(descifrado)) {
+      throw new Error("La bóveda de cuentas tiene un formato inválido.");
+    }
+    return descifrado as UsuarioBoveda[];
   }
 
-  return parsed;
+  // Migración automática y segura si existían cuentas de la versión anterior
+  const rawLegacy = await AsyncStorage.getItem(CLAVE_USUARIOS_LEGACY);
+  if (!rawLegacy) return [];
+
+  const parsedLegacy = descifrarObjetoDeStorage<unknown>(rawLegacy);
+  if (!Array.isArray(parsedLegacy)) return [];
+
+  const migrados: UsuarioBoveda[] = [];
+  for (const item of parsedLegacy) {
+    if (!item || typeof item !== "object") continue;
+    const obj = item as Record<string, unknown>;
+    const matricula =
+      typeof obj.matricula === "string"
+        ? obj.matricula.trim().toUpperCase()
+        : "";
+    if (!matricula) continue;
+
+    let salt = typeof obj.salt === "string" ? obj.salt : "";
+    let passwordHash =
+      typeof obj.passwordHash === "string" ? obj.passwordHash : "";
+
+    if (!passwordHash && typeof obj.password === "string") {
+      salt = generarSalAleatoria(16);
+      passwordHash = derivarHashPassword(obj.password, salt, matricula);
+    }
+
+    if (!passwordHash || !salt) continue;
+
+    migrados.push({
+      matricula,
+      nombre: typeof obj.nombre === "string" ? obj.nombre : "Usuario UTCH",
+      rol: normalizarRol(obj.rol),
+      carreraId:
+        typeof obj.carreraId === "string"
+          ? obj.carreraId
+          : "escolares_general",
+      carreraNombre:
+        typeof obj.carreraNombre === "string"
+          ? obj.carreraNombre
+          : "Comunidad UTCH",
+      accesoRecomendado:
+        obj.accesoRecomendado === "Acceso 2 (TI / Industrial)"
+          ? "Acceso 2 (TI / Industrial)"
+          : "Acceso 1 (Av. Cantera)",
+      placas: typeof obj.placas === "string" ? obj.placas : "SIN-PLACAS",
+      vehiculo:
+        typeof obj.vehiculo === "string"
+          ? obj.vehiculo
+          : "Vehículo particular",
+      accesible: Boolean(obj.accesible),
+      codigoQR:
+        typeof obj.codigoQR === "string" ? obj.codigoQR : `UTCH-${matricula}`,
+      fechaRegistro:
+        typeof obj.fechaRegistro === "string"
+          ? obj.fechaRegistro
+          : new Date().toISOString(),
+      passwordHash,
+      salt,
+    });
+  }
+
+  await guardarBovedaInterna(migrados);
+  return migrados;
 }
 
 export async function buscarUsuarioPorMatricula(
   matricula: string
 ): Promise<Usuario | null> {
-  const usuarios = await obtenerUsuarios();
+  const boveda = await leerBovedaInterna();
   const limpia = matricula.trim().toUpperCase();
-  return usuarios.find((u) => u.matricula === limpia) ?? null;
+  const encontrado = boveda.find((u) => u.matricula === limpia);
+  return encontrado ? sanitizarUsuarioPublico(encontrado) : null;
 }
 
 export async function registrarUsuario(
@@ -129,12 +234,14 @@ export async function registrarUsuario(
 ): Promise<{ ok: true; usuario: Usuario } | { ok: false; error: string }> {
   const matriculaLimpia = datos.matricula.trim().toUpperCase();
   const nombreLimpio = datos.nombre.trim();
-  const placasLimpias = datos.placas.trim().toUpperCase();
+  const placasLimpias =
+    (datos.placas ?? "").trim().toUpperCase() || "SIN-PLACAS";
 
-  if (matriculaLimpia.length < 4) {
+  if (matriculaLimpia.length < 3) {
     return {
       ok: false,
-      error: "Ingresa una matrícula o número de empleado válido (mínimo 4 caracteres).",
+      error:
+        "Ingresa una matrícula de alumno o clave de docente válida (mínimo 3 caracteres).",
     };
   }
   if (nombreLimpio.length < 3) {
@@ -146,41 +253,47 @@ export async function registrarUsuario(
       error: "La contraseña debe tener al menos 4 caracteres.",
     };
   }
-  if (placasLimpias.length < 4) {
-    return { ok: false, error: "Ingresa las placas de tu vehículo." };
-  }
 
-  const usuarios = await obtenerUsuarios();
-  if (usuarios.some((u) => u.matricula === matriculaLimpia)) {
+  const boveda = await leerBovedaInterna();
+  if (boveda.some((u) => u.matricula === matriculaLimpia)) {
     return {
       ok: false,
-      error: `La matrícula ${matriculaLimpia} ya está registrada. Inicia sesión.`,
+      error: `La cuenta ${matriculaLimpia} ya está registrada. Inicia sesión.`,
     };
   }
 
   const carreraInfo =
     CARRERAS_UTCH.find((c) => c.id === datos.carreraId) ?? CARRERAS_UTCH[0];
 
-  const nuevoUsuario: Usuario = {
+  // Generación de sal criptográfica única y hash irreversible de 500 rondas
+  const salt = generarSalAleatoria(16);
+  const passwordHash = derivarHashPassword(
+    datos.password,
+    salt,
+    matriculaLimpia
+  );
+
+  const nuevoEnBoveda: UsuarioBoveda = {
     matricula: matriculaLimpia,
     nombre: nombreLimpio,
-    password: datos.password,
-    rol: datos.rol,
+    passwordHash,
+    salt,
+    rol: normalizarRol(datos.rol),
     carreraId: carreraInfo.id,
     carreraNombre: carreraInfo.nombre,
     accesoRecomendado: carreraInfo.accesoRecomendado,
     placas: placasLimpias,
-    vehiculo: datos.vehiculo.trim() || "Vehículo registrado",
-    accesible: datos.accesible,
-    codigoQR: `UTCH-${matriculaLimpia}-${placasLimpias}`,
+    vehiculo: (datos.vehiculo ?? "").trim() || "Vehículo particular",
+    accesible: Boolean(datos.accesible),
+    codigoQR: `UTCH-${matriculaLimpia}`,
     fechaRegistro: new Date().toISOString(),
   };
 
-  const actualizados = [...usuarios, nuevoUsuario];
-  await AsyncStorage.setItem(CLAVE_USUARIOS, JSON.stringify(actualizados));
-  await guardarSesionActiva(nuevoUsuario.matricula);
+  const actualizados = [...boveda, nuevoEnBoveda];
+  await guardarBovedaInterna(actualizados);
+  await guardarSesionActiva(nuevoEnBoveda.matricula);
 
-  return { ok: true, usuario: nuevoUsuario };
+  return { ok: true, usuario: sanitizarUsuarioPublico(nuevoEnBoveda) };
 }
 
 export async function autenticarUsuario(
@@ -189,37 +302,142 @@ export async function autenticarUsuario(
 ): Promise<{ ok: true; usuario: Usuario } | { ok: false; error: string }> {
   const limpia = matricula.trim().toUpperCase();
   if (!limpia || !password) {
-    return { ok: false, error: "Ingresa tu matrícula y contraseña." };
+    return { ok: false, error: "Ingresa tu matrícula/clave y contraseña." };
   }
 
-  const usuario = await buscarUsuarioPorMatricula(limpia);
-  if (!usuario) {
+  // Verificar si la cuenta está temporalmente bloqueada por intentos fallidos
+  const estadoIntentos = intentosFallidosPorCuenta[limpia];
+  if (estadoIntentos && estadoIntentos.bloqueadoHasta > Date.now()) {
+    const segundosRestantes = Math.ceil(
+      (estadoIntentos.bloqueadoHasta - Date.now()) / 1000
+    );
     return {
       ok: false,
-      error: "No encontramos una cuenta con esa matrícula. Regístrate primero.",
+      error: `Cuenta protegida por demasiados intentos fallidos. Espera ${segundosRestantes} segundos para volver a intentar.`,
     };
   }
 
-  if (usuario.password !== password) {
-    return { ok: false, error: "Contraseña incorrecta." };
+  const boveda = await leerBovedaInterna();
+  const usuarioInterno = boveda.find((u) => u.matricula === limpia);
+
+  // Mensaje genérico seguro y verificación en tiempo constante
+  if (!usuarioInterno) {
+    return {
+      ok: false,
+      error:
+        "Credenciales inválidas o cuenta no encontrada. Verifica tu matrícula y contraseña.",
+    };
   }
 
-  await guardarSesionActiva(usuario.matricula);
-  return { ok: true, usuario };
+  const hashCalculado = derivarHashPassword(
+    password,
+    usuarioInterno.salt,
+    limpia
+  );
+  const coincide = comparacionTiempoConstante(
+    hashCalculado,
+    usuarioInterno.passwordHash
+  );
+
+  if (!coincide) {
+    const previo = intentosFallidosPorCuenta[limpia]?.conteo ?? 0;
+    const nuevoConteo = previo + 1;
+    if (nuevoConteo >= MAX_INTENTOS_LOGIN) {
+      intentosFallidosPorCuenta[limpia] = {
+        conteo: 0,
+        bloqueadoHasta: Date.now() + TIEMPO_BLOQUEO_MS,
+      };
+      return {
+        ok: false,
+        error:
+          "Se superó el límite de 5 intentos fallidos. Por seguridad, la cuenta se bloqueó temporalmente por 60 segundos.",
+      };
+    }
+
+    intentosFallidosPorCuenta[limpia] = {
+      conteo: nuevoConteo,
+      bloqueadoHasta: 0,
+    };
+    const restantes = MAX_INTENTOS_LOGIN - nuevoConteo;
+    return {
+      ok: false,
+      error: `Contraseña incorrecta (${restantes} intento(s) restante(s) antes del bloqueo temporal).`,
+    };
+  }
+
+  delete intentosFallidosPorCuenta[limpia];
+  await guardarSesionActiva(usuarioInterno.matricula);
+  return { ok: true, usuario: sanitizarUsuarioPublico(usuarioInterno) };
 }
 
 export async function guardarSesionActiva(
   matricula: string | null
 ): Promise<void> {
+  await AsyncStorage.removeItem(CLAVE_SESION_LEGACY);
   if (matricula === null) {
-    await AsyncStorage.removeItem(CLAVE_SESION);
+    await AsyncStorage.removeItem(CLAVE_BOVEDA_SESION);
   } else {
-    await AsyncStorage.setItem(CLAVE_SESION, matricula);
+    const tokenSesionCifrado = cifrarObjetoParaStorage({
+      matricula: matricula.trim().toUpperCase(),
+      emitidoEn: Date.now(),
+    });
+    await AsyncStorage.setItem(CLAVE_BOVEDA_SESION, tokenSesionCifrado);
   }
 }
 
 export async function obtenerSesionActiva(): Promise<Usuario | null> {
-  const matricula = await AsyncStorage.getItem(CLAVE_SESION);
-  if (!matricula) return null;
-  return await buscarUsuarioPorMatricula(matricula);
+  const rawToken = await AsyncStorage.getItem(CLAVE_BOVEDA_SESION);
+  if (rawToken) {
+    try {
+      const sesion = descifrarObjetoDeStorage<{
+        matricula?: string;
+        emitidoEn?: number;
+      }>(rawToken);
+      if (sesion && typeof sesion.matricula === "string") {
+        return await buscarUsuarioPorMatricula(sesion.matricula);
+      }
+    } catch {
+      await AsyncStorage.removeItem(CLAVE_BOVEDA_SESION);
+      return null;
+    }
+  }
+
+  // Migración de sesión previa si existía
+  const legacyMatricula = await AsyncStorage.getItem(CLAVE_SESION_LEGACY);
+  if (!legacyMatricula) return null;
+  await guardarSesionActiva(legacyMatricula);
+  return await buscarUsuarioPorMatricula(legacyMatricula);
+}
+
+export async function actualizarVehiculoUsuario(
+  matricula: string,
+  datos: { vehiculo: string; placas: string }
+): Promise<{ ok: true; usuario: Usuario } | { ok: false; error: string }> {
+  const limpia = matricula.trim().toUpperCase();
+  const vehiculoLimpio = datos.vehiculo.trim();
+  const placasLimpias = datos.placas.trim().toUpperCase();
+
+  if (vehiculoLimpio.length < 2) {
+    return {
+      ok: false,
+      error: "Ingresa el modelo y color de tu carro (ej. Nissan Versa Blanco).",
+    };
+  }
+
+  const boveda = await leerBovedaInterna();
+  const indice = boveda.findIndex((u) => u.matricula === limpia);
+  if (indice === -1) {
+    return { ok: false, error: "No se encontró tu cuenta activa." };
+  }
+
+  const actualizado: UsuarioBoveda = {
+    ...boveda[indice],
+    vehiculo: vehiculoLimpio,
+    placas: placasLimpias || "SIN-PLACAS",
+  };
+
+  boveda[indice] = actualizado;
+  await guardarBovedaInterna(boveda);
+
+  return { ok: true, usuario: sanitizarUsuarioPublico(actualizado) };
 }

@@ -38,22 +38,22 @@ export default function Login() {
       <View style={styles.contenido}>
         <Text style={styles.titulo}>Bienvenido a UTCH ParkMate</Text>
         <Text style={styles.descripcion}>
-          Ingresa tu matrícula y contraseña registrada para acceder a tu
-          credencial y consultar disponibilidad.
+          Inicia sesión con tu cuenta de alumno o docente para reportar en qué
+          estacionamiento te encuentras o avisar cuando un área ya esté llena.
         </Text>
 
-        <Text style={styles.etiqueta}>Matrícula o No. Empleado</Text>
+        <Text style={styles.etiqueta}>Matrícula (Alumno) o Clave (Docente)</Text>
         <TextInput
           value={matricula}
           onChangeText={(texto) => {
             setMatricula(texto);
             setAviso("");
           }}
-          placeholder="Ej. 1221100456"
+          placeholder="Ej. 1221100456 o DOC-104"
           autoCapitalize="characters"
           autoCorrect={false}
           style={styles.entrada}
-          accessibilityLabel="Matrícula"
+          accessibilityLabel="Matrícula o Clave"
         />
 
         <Text style={styles.etiqueta}>Contraseña</Text>
@@ -75,11 +75,11 @@ export default function Login() {
 
         <View style={styles.botones}>
           <Boton
-            texto={cargando ? "Verificando..." : "Entrar"}
+            texto={cargando ? "Verificando..." : "Iniciar sesión"}
             onPress={cargando ? () => {} : continuar}
           />
           <Boton
-            texto="¿No tienes cuenta? Crear cuenta UTCH"
+            texto="¿No tienes cuenta? Crear cuenta (Alumno / Docente)"
             tipo="secundario"
             onPress={() => router.replace("/registro")}
           />

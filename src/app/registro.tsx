@@ -3,7 +3,6 @@ import { useState } from "react";
 import {
   ScrollView,
   StyleSheet,
-  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -19,19 +18,15 @@ export default function Registro() {
   const router = useRouter();
   const { registrarCuenta } = useSesion();
 
-  const [rol, setRol] = useState<RolUsuario>("Estudiante");
+  const [rol, setRol] = useState<RolUsuario>("Alumno");
   const [matricula, setMatricula] = useState("");
   const [nombre, setNombre] = useState("");
-  const [carreraId, setCarreraId] = useState("ti");
+  const [carreraId, setCarreraId] = useState("escolares_general");
   const [placas, setPlacas] = useState("");
   const [vehiculo, setVehiculo] = useState("");
   const [password, setPassword] = useState("");
-  const [accesible, setAccesible] = useState(false);
   const [aviso, setAviso] = useState("");
   const [guardando, setGuardando] = useState(false);
-
-  const carreraSeleccionada =
-    CARRERAS_UTCH.find((c) => c.id === carreraId) ?? CARRERAS_UTCH[0];
 
   async function manejarRegistro() {
     setAviso("");
@@ -46,7 +41,7 @@ export default function Registro() {
         carreraId,
         placas,
         vehiculo,
-        accesible,
+        accesible: false,
       });
 
       if (!resultado.ok) {
@@ -67,16 +62,16 @@ export default function Registro() {
       <Encabezado titulo="Crear cuenta UTCH" onAtras={() => router.back()} />
 
       <View style={styles.contenido}>
-        <Text style={styles.titulo}>Registro de Conductor</Text>
+        <Text style={styles.titulo}>Registro en la Comunidad UTCH</Text>
         <Text style={styles.descripcion}>
-          Crea tu cuenta con tu matrícula para guardar tu vehículo, generar tu
-          código QR de acceso y ver disponibilidad real.
+          Crea tu cuenta como alumno o docente para reportar en qué área de la
+          escuela te estacionaste o avisar cuando un estacionamiento esté lleno.
         </Text>
 
-        {/* Rol */}
-        <Text style={styles.etiqueta}>Tipo de usuario</Text>
+        {/* Rol: Alumno o Docente */}
+        <Text style={styles.etiqueta}>¿Eres alumno o docente?</Text>
         <View style={styles.filaOpciones}>
-          {(["Estudiante", "Personal"] as RolUsuario[]).map((opcion) => {
+          {(["Alumno", "Docente"] as RolUsuario[]).map((opcion) => {
             const activo = rol === opcion;
             return (
               <TouchableOpacity
@@ -84,7 +79,9 @@ export default function Registro() {
                 onPress={() => {
                   setRol(opcion);
                   setCarreraId(
-                    opcion === "Personal" ? "rectoria_admin" : "ti"
+                    opcion === "Docente"
+                      ? "docente_academico"
+                      : "escolares_general"
                   );
                 }}
                 style={[styles.opcionChip, activo && styles.opcionChipActiva]}
@@ -95,18 +92,18 @@ export default function Registro() {
                     activo && styles.opcionTextoActivo,
                   ]}
                 >
-                  {opcion === "Estudiante"
-                    ? "Estudiante (Azul)"
-                    : "Personal / Docente (Verde)"}
+                  Soy {opcion}
                 </Text>
               </TouchableOpacity>
             );
           })}
         </View>
 
-        {/* Matrícula */}
+        {/* Matrícula o Clave */}
         <Text style={styles.etiqueta}>
-          {rol === "Estudiante" ? "Matrícula escolar" : "Número de empleado"}
+          {rol === "Alumno"
+            ? "Matrícula de alumno"
+            : "Clave o Número de docente"}
         </Text>
         <TextInput
           value={matricula}
@@ -114,7 +111,7 @@ export default function Registro() {
             setMatricula(t);
             setAviso("");
           }}
-          placeholder={rol === "Estudiante" ? "Ej. 1221100456" : "Ej. EMP-204"}
+          placeholder={rol === "Alumno" ? "Ej. 1221100456" : "Ej. DOC-104"}
           autoCapitalize="characters"
           autoCorrect={false}
           style={styles.entrada}
@@ -133,8 +130,21 @@ export default function Registro() {
           style={styles.entrada}
         />
 
-        {/* Carrera o Área */}
-        <Text style={styles.etiqueta}>Carrera o Área en UTCH</Text>
+        {/* Contraseña */}
+        <Text style={styles.etiqueta}>Contraseña</Text>
+        <TextInput
+          value={password}
+          onChangeText={(t) => {
+            setPassword(t);
+            setAviso("");
+          }}
+          placeholder="Mínimo 4 caracteres"
+          secureTextEntry
+          style={styles.entrada}
+        />
+
+        {/* Área o Carrera en UTCH */}
+        <Text style={styles.etiqueta}>Área o edificio que visitas más</Text>
         <View style={styles.listaCarreras}>
           {CARRERAS_UTCH.map((carrera) => {
             const seleccionada = carrera.id === carreraId;
@@ -168,17 +178,8 @@ export default function Registro() {
           })}
         </View>
 
-        <View style={styles.cajaInfoAcceso}>
-          <Text style={styles.infoAccesoTitulo}>
-            Acceso sugerido en mapa UTCH:
-          </Text>
-          <Text style={styles.infoAccesoValor}>
-            {carreraSeleccionada.accesoRecomendado}
-          </Text>
-        </View>
-
-        {/* Vehículo */}
-        <Text style={styles.etiqueta}>Placas del vehículo</Text>
+        {/* Vehículo (opcional) */}
+        <Text style={styles.etiqueta}>Placas del vehículo (opcional)</Text>
         <TextInput
           value={placas}
           onChangeText={(t) => {
@@ -199,43 +200,17 @@ export default function Registro() {
           style={styles.entrada}
         />
 
-        {/* Accesibilidad */}
-        <View style={styles.filaSwitch}>
-          <View style={styles.switchTextoBox}>
-            <Text style={styles.switchTitulo}>Cajón preferente / accesible</Text>
-            <Text style={styles.switchSub}>
-              Prioriza cajones para personas con discapacidad cerca de rampas.
-            </Text>
-          </View>
-          <Switch
-            value={accesible}
-            onValueChange={setAccesible}
-            trackColor={{ false: colores.estructura, true: colores.azulAccesible }}
-          />
-        </View>
-
-        {/* Contraseña */}
-        <Text style={styles.etiqueta}>Contraseña</Text>
-        <TextInput
-          value={password}
-          onChangeText={(t) => {
-            setPassword(t);
-            setAviso("");
-          }}
-          placeholder="Mínimo 4 caracteres"
-          secureTextEntry
-          style={styles.entrada}
-        />
-
         {aviso !== "" && <Text style={styles.aviso}>{aviso}</Text>}
 
         <View style={styles.acciones}>
           <Boton
-            texto={guardando ? "Guardando registro..." : "Crear cuenta y entrar"}
+            texto={
+              guardando ? "Guardando registro..." : "Crear cuenta y entrar"
+            }
             onPress={guardando ? () => {} : manejarRegistro}
           />
           <Boton
-            texto="Ya tengo cuenta (Iniciar sesión)"
+            texto="Ya tengo cuenta · Iniciar sesión"
             tipo="secundario"
             onPress={() => router.replace("/login")}
           />
@@ -289,7 +264,7 @@ const styles = StyleSheet.create({
   },
   opcionChip: {
     flex: 1,
-    paddingVertical: 12,
+    paddingVertical: 14,
     paddingHorizontal: 10,
     borderRadius: 10,
     borderWidth: 1.5,
@@ -302,7 +277,7 @@ const styles = StyleSheet.create({
     borderColor: colores.verdeUtch,
   },
   opcionTexto: {
-    fontSize: 13,
+    fontSize: 15,
     fontWeight: "bold",
     color: colores.texto,
     textAlign: "center",
@@ -339,49 +314,6 @@ const styles = StyleSheet.create({
   },
   metaCarreraActiva: {
     color: "#E2E8F0",
-  },
-  cajaInfoAcceso: {
-    marginTop: 12,
-    padding: 12,
-    borderRadius: 10,
-    backgroundColor: "#DCFCE7",
-    borderWidth: 1,
-    borderColor: colores.verdeUtch,
-  },
-  infoAccesoTitulo: {
-    fontSize: 13,
-    color: colores.texto,
-  },
-  infoAccesoValor: {
-    fontSize: 15,
-    fontWeight: "bold",
-    color: colores.verdeUtch,
-    marginTop: 2,
-  },
-  filaSwitch: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginTop: 16,
-    padding: 14,
-    borderRadius: 10,
-    backgroundColor: colores.blanco,
-    borderWidth: 1,
-    borderColor: colores.estructura,
-  },
-  switchTextoBox: {
-    flex: 1,
-    paddingRight: 12,
-  },
-  switchTitulo: {
-    fontSize: 15,
-    fontWeight: "bold",
-    color: colores.texto,
-  },
-  switchSub: {
-    marginTop: 2,
-    fontSize: 13,
-    color: "#475569",
   },
   aviso: {
     marginTop: 14,

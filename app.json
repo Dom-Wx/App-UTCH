@@ -20,6 +20,12 @@
     "plugins": [
       "expo-router",
       [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "UTCH ParkMate requiere acceso a tu ubicación dentro de la escuela para funcionar correctamente."
+        }
+      ],
+      [
         "expo-splash-screen",
         {
           "backgroundColor": "#006837",

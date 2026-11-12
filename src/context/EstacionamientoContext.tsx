@@ -7,40 +7,53 @@ import {
   useMemo,
   useState,
 } from "react";
+import { Platform } from "react-native";
 import {
   calcularZona,
-  Fila,
+  estadoInicialZona,
+  EstadoZonaGuardado,
   Zona,
   zonasIniciales,
 } from "../data/estacionamientos";
+import {
+  cifrarObjetoParaStorage,
+  descifrarObjetoDeStorage,
+  hashAnonimoMatricula,
+} from "../services/seguridad";
 
 export type VehiculoEstacionado = {
-  matricula: string;
+  tokenAnonimo: string;
   zonaId: string;
   zonaNombre: string;
-  cajonNombre: string;
-  eraAccesible: boolean;
+  fraseReporte: string;
   horaIngreso: string;
 };
 
-export type MovimientoEstacionamiento = {
+export type ReporteMalEstacionado = {
   id: string;
-  tipo: "ENTRADA" | "SALIDA";
-  matricula: string;
   zonaId: string;
   zonaNombre: string;
-  cajonNombre: string;
+  motivo: string;
+  fotoUri: string;
+  rolReportante: string;
   hora: string;
 };
 
 export type AlertaSaturacion = {
   zonaId: string;
   zonaNombre: string;
-  porcentaje: number;
-  libres: number;
-  nivel: "casi_lleno" | "lleno";
+  personasEnElLugar: number;
+  capacidadRealDetectada: number | null;
+  nivel: "concurrido" | "lleno";
   mensaje: string;
+  detalleReporte?: string;
   alternativa?: string;
+};
+
+export type DatosUsuarioReporte = {
+  matricula: string;
+  nombre: string;
+  rol: string;
 };
 
 type ResultadoAccion =
@@ -48,7 +61,6 @@ type ResultadoAccion =
       ok: true;
       zonaId: string;
       zonaNombre: string;
-      cajonNombre: string;
       mensaje: string;
     }
   | { ok: false; error: string };
@@ -57,35 +69,43 @@ type EstacionamientoContextType = {
   zonas: Zona[];
   alertasSaturacion: AlertaSaturacion[];
   vehiculosEstacionados: Record<string, VehiculoEstacionado>;
-  historial: MovimientoEstacionamiento[];
+  reportesMalEstacionado: ReporteMalEstacionado[];
   cargando: boolean;
   errorCarga: string | null;
-  obtenerCajonDeUsuario: (matricula: string | null) => VehiculoEstacionado | null;
-  registrarIngresoEnZona: (
+  obtenerCajonDeUsuario: (
+    matricula: string | null
+  ) => VehiculoEstacionado | null;
+  reportarLlegadaEnZona: (
     zonaId: string,
-    matricula: string,
-    accesible: boolean
+    usuario: DatosUsuarioReporte
   ) => Promise<ResultadoAccion>;
-  ocuparCajonEspecifico: (
+  reportarCupoLleno: (
     zonaId: string,
-    cajonNombre: string,
-    matricula: string
+    usuario: DatosUsuarioReporte
+  ) => Promise<ResultadoAccion>;
+  reportarEspacioDisponible: (
+    zonaId: string,
+    usuario: DatosUsuarioReporte
   ) => Promise<ResultadoAccion>;
   registrarSalidaVehiculo: (matricula: string) => Promise<ResultadoAccion>;
+  publicarReporteMalEstacionado: (datos: {
+    zonaId: string;
+    motivo: string;
+    fotoUri: string;
+    rolReportante: string;
+  }) => Promise<ResultadoAccion>;
+  sumarAutoComunidad: (zonaId: string) => Promise<ResultadoAccion>;
   reiniciarEstacionamientos: () => Promise<void>;
 };
 
-const CLAVE_FILAS = "@utch_park_filas_v1";
-const CLAVE_ACTIVOS = "@utch_park_activos_v1";
-const CLAVE_HISTORIAL = "@utch_park_historial_v1";
+const CLAVE_ESTADOS_ZONA = "@utch_park_estados_colaborativos_v2";
+const CLAVE_ACTIVOS = "@utch_park_activos_colaborativos_v2";
+const CLAVE_REPORTES_FOTOS = "@utch_park_reportes_mal_estacionado_v1";
 
-function crearFilasIniciales(): Record<string, Fila[]> {
-  const mapa: Record<string, Fila[]> = {};
+function crearEstadosIniciales(): Record<string, EstadoZonaGuardado> {
+  const mapa: Record<string, EstadoZonaGuardado> = {};
   for (const zona of zonasIniciales) {
-    mapa[zona.id] = zona.filasIniciales.map((f) => ({
-      letra: f.letra,
-      cajones: [...f.cajones],
-    }));
+    mapa[zona.id] = estadoInicialZona();
   }
   return mapa;
 }
@@ -97,114 +117,140 @@ function horaActual(): string {
   });
 }
 
+function formatearFraseLlegada(nombreZona: string): string {
+  if (nombreZona.toLowerCase().startsWith("edificio ")) {
+    return `Me estacioné en el edificio ${nombreZona.slice("Edificio ".length)}`;
+  }
+  return `Me estacioné en ${nombreZona}`;
+}
+
 const EstacionamientoContext = createContext<EstacionamientoContextType | null>(
   null
 );
 
 export function EstacionamientoProvider({ children }: { children: ReactNode }) {
-  const [filasPorZona, setFilasPorZona] = useState<Record<string, Fila[]>>(
-    crearFilasIniciales
-  );
+  const [estadosPorZona, setEstadosPorZona] = useState<
+    Record<string, EstadoZonaGuardado>
+  >(crearEstadosIniciales);
   const [vehiculosEstacionados, setVehiculosEstacionados] = useState<
     Record<string, VehiculoEstacionado>
   >({});
-  const [historial, setHistorial] = useState<MovimientoEstacionamiento[]>([]);
+  const [reportesMalEstacionado, setReportesMalEstacionado] = useState<
+    ReporteMalEstacionado[]
+  >([]);
   const [cargando, setCargando] = useState(true);
   const [errorCarga, setErrorCarga] = useState<string | null>(null);
 
-  useEffect(() => {
-    let activo = true;
-    async function cargar() {
-      try {
-        const [rawFilas, rawActivos, rawHistorial] = await Promise.all([
-          AsyncStorage.getItem(CLAVE_FILAS),
-          AsyncStorage.getItem(CLAVE_ACTIVOS),
-          AsyncStorage.getItem(CLAVE_HISTORIAL),
-        ]);
+  async function cargarDesdeStorage() {
+    try {
+      const [rawEstados, rawActivos, rawReportes] = await Promise.all([
+        AsyncStorage.getItem(CLAVE_ESTADOS_ZONA),
+        AsyncStorage.getItem(CLAVE_ACTIVOS),
+        AsyncStorage.getItem(CLAVE_REPORTES_FOTOS),
+      ]);
 
-        if (!activo) return;
-        if (rawFilas) {
-          const parsed: unknown = JSON.parse(rawFilas);
-          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            throw new Error("El mapa guardado no es válido.");
-          }
-          const filasRestauradas = crearFilasIniciales();
+      if (rawEstados) {
+        const parsed: unknown = descifrarObjetoDeStorage(rawEstados);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const restaurados = crearEstadosIniciales();
           for (const base of zonasIniciales) {
-            const filas = (parsed as Record<string, unknown>)[base.id];
-            if (filas === undefined) continue;
-            if (
-              !Array.isArray(filas) ||
-              filas.some(
-                (fila) =>
-                  !fila ||
-                  typeof fila !== "object" ||
-                  typeof fila.letra !== "string" ||
-                  !Array.isArray(fila.cajones) ||
-                  fila.cajones.some(
-                    (estado: unknown) =>
-                      estado !== 0 && estado !== 1 && estado !== 2
-                  )
-              )
-            ) {
-              throw new Error("El mapa guardado tiene cajones inválidos.");
+            const guardado = (parsed as Record<string, unknown>)[base.id];
+            if (guardado && typeof guardado === "object") {
+              const g = guardado as Partial<EstadoZonaGuardado>;
+              restaurados[base.id] = {
+                personasEnElLugar:
+                  typeof g.personasEnElLugar === "number"
+                    ? Math.max(0, g.personasEnElLugar)
+                    : 0,
+                estaLleno: Boolean(g.estaLleno),
+                capacidadRealDetectada:
+                  typeof g.capacidadRealDetectada === "number" &&
+                  g.capacidadRealDetectada > 0
+                    ? g.capacidadRealDetectada
+                    : null,
+                maximoRegistrado:
+                  typeof g.maximoRegistrado === "number"
+                    ? Math.max(0, g.maximoRegistrado)
+                    : 0,
+                ultimoReporteLleno: g.ultimoReporteLleno ?? null,
+              };
             }
-            filasRestauradas[base.id] = filas;
           }
-          setFilasPorZona(filasRestauradas);
+          setEstadosPorZona(restaurados);
         }
-        if (rawActivos) {
-          const parsed: unknown = JSON.parse(rawActivos);
-          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-            throw new Error("Los vehículos estacionados no son válidos.");
-          }
+      }
+
+      if (rawActivos) {
+        const parsed: unknown = descifrarObjetoDeStorage(rawActivos);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
           setVehiculosEstacionados(
             parsed as Record<string, VehiculoEstacionado>
           );
         }
-        if (rawHistorial) {
-          const parsed: unknown = JSON.parse(rawHistorial);
-          if (!Array.isArray(parsed)) {
-            throw new Error("El historial de movimientos no es válido.");
-          }
-          setHistorial(parsed);
-        }
-      } catch {
-        if (activo) {
-          setErrorCarga(
-            "No se pudo restaurar la disponibilidad guardada. No se modificarán los cajones."
-          );
-        }
-      } finally {
-        if (activo) setCargando(false);
       }
+
+      if (rawReportes) {
+        const parsed: unknown = descifrarObjetoDeStorage(rawReportes);
+        if (Array.isArray(parsed)) {
+          setReportesMalEstacionado(parsed);
+        }
+      }
+      setErrorCarga(null);
+    } catch {
+      setErrorCarga("No se pudieron cargar los reportes previos.");
+    } finally {
+      setCargando(false);
     }
-    cargar();
-    return () => {
-      activo = false;
-    };
+  }
+
+  useEffect(() => {
+    cargarDesdeStorage();
+
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      const alCambiarStorage = (e: StorageEvent) => {
+        if (
+          e.key === CLAVE_ESTADOS_ZONA ||
+          e.key === CLAVE_ACTIVOS ||
+          e.key === CLAVE_REPORTES_FOTOS
+        ) {
+          cargarDesdeStorage();
+        }
+      };
+      window.addEventListener("storage", alCambiarStorage);
+      return () => window.removeEventListener("storage", alCambiarStorage);
+    }
   }, []);
 
   async function persistir(
-    nuevasFilas: Record<string, Fila[]>,
+    nuevosEstados: Record<string, EstadoZonaGuardado>,
     nuevosActivos: Record<string, VehiculoEstacionado>,
-    nuevoHistorial: MovimientoEstacionamiento[]
+    nuevosReportes: ReporteMalEstacionado[]
   ) {
     await Promise.all([
-      AsyncStorage.setItem(CLAVE_FILAS, JSON.stringify(nuevasFilas)),
-      AsyncStorage.setItem(CLAVE_ACTIVOS, JSON.stringify(nuevosActivos)),
-      AsyncStorage.setItem(CLAVE_HISTORIAL, JSON.stringify(nuevoHistorial)),
+      AsyncStorage.setItem(
+        CLAVE_ESTADOS_ZONA,
+        cifrarObjetoParaStorage(nuevosEstados)
+      ),
+      AsyncStorage.setItem(
+        CLAVE_ACTIVOS,
+        cifrarObjetoParaStorage(nuevosActivos)
+      ),
+      AsyncStorage.setItem(
+        CLAVE_REPORTES_FOTOS,
+        cifrarObjetoParaStorage(nuevosReportes)
+      ),
     ]);
-    setFilasPorZona(nuevasFilas);
+    setEstadosPorZona(nuevosEstados);
     setVehiculosEstacionados(nuevosActivos);
-    setHistorial(nuevoHistorial);
+    setReportesMalEstacionado(nuevosReportes);
   }
 
   const zonas = useMemo<Zona[]>(() => {
     return zonasIniciales.map((base) => {
-      const filas = filasPorZona[base.id] ?? base.filasIniciales;
-      return calcularZona(base, filas);
+      const estado = estadosPorZona[base.id] ?? estadoInicialZona();
+      return calcularZona(base, estado);
     });
-  }, [filasPorZona]);
+  }, [estadosPorZona]);
 
   const alertasSaturacion = useMemo<AlertaSaturacion[]>(() => {
     const alertas: AlertaSaturacion[] = [];
@@ -212,26 +258,23 @@ export function EstacionamientoProvider({ children }: { children: ReactNode }) {
     for (const zona of zonas) {
       if (zona.nivelAlerta === "disponible") continue;
 
-      const alternativa = zonas.find(
-        (z) =>
-          z.id !== zona.id &&
-          z.tipo === zona.tipo &&
-          z.nivelAlerta === "disponible" &&
-          z.libres > 0
-      );
+      const alternativa = zonas.find((z) => z.id !== zona.id && !z.estaLleno);
 
       alertas.push({
         zonaId: zona.id,
         zonaNombre: zona.nombre,
-        porcentaje: zona.porcentajeOcupacion,
-        libres: zona.libres,
+        personasEnElLugar: zona.personasEnElLugar,
+        capacidadRealDetectada: zona.capacidadRealDetectada,
         nivel: zona.nivelAlerta,
         mensaje:
           zona.nivelAlerta === "lleno"
-            ? `${zona.nombre} está LLENO (100% ocupado).`
-            : `${zona.nombre} al ${zona.porcentajeOcupacion}% (${zona.libres} lugares libres).`,
+            ? `Estacionamiento del ${zona.nombre} marcado como "LLENO" · Personas en el lugar: ${zona.personasEnElLugar}`
+            : `Alta afluencia en ${zona.nombre} · Personas en el lugar: ${zona.personasEnElLugar}`,
+        detalleReporte: zona.ultimoReporteLleno
+          ? `Aviso enviado por un ${zona.ultimoReporteLleno.rol.toLowerCase()} a las ${zona.ultimoReporteLleno.hora}. Capacidad real registrada: ${zona.capacidadRealDetectada ?? zona.personasEnElLugar} vehículo(s).`
+          : undefined,
         alternativa: alternativa
-          ? `Sugerencia: Usa ${alternativa.nombre} (${alternativa.libres} libres por ${alternativa.accesoCercano}).`
+          ? `Alternativa disponible: Estacionamiento del ${alternativa.nombre} (Personas en el lugar: ${alternativa.personasEnElLugar}).`
           : undefined,
       });
     }
@@ -243,277 +286,320 @@ export function EstacionamientoProvider({ children }: { children: ReactNode }) {
     matricula: string | null
   ): VehiculoEstacionado | null {
     if (!matricula) return null;
-    return vehiculosEstacionados[matricula.trim().toUpperCase()] ?? null;
+    const token = hashAnonimoMatricula(matricula);
+    return vehiculosEstacionados[token] ?? null;
   }
 
-  function clonarFilas(origen: Record<string, Fila[]>) {
-    const copia: Record<string, Fila[]> = {};
-    for (const id of Object.keys(origen)) {
-      copia[id] = origen[id].map((f) => ({
-        letra: f.letra,
-        cajones: [...f.cajones],
-      }));
+  function clonarEstados(
+    origen: Record<string, EstadoZonaGuardado>
+  ): Record<string, EstadoZonaGuardado> {
+    const copia: Record<string, EstadoZonaGuardado> = {};
+    for (const base of zonasIniciales) {
+      const actual = origen[base.id] ?? estadoInicialZona();
+      copia[base.id] = {
+        ...actual,
+        ultimoReporteLleno: actual.ultimoReporteLleno
+          ? { ...actual.ultimoReporteLleno }
+          : null,
+      };
     }
     return copia;
   }
 
-  function liberarEnMapa(
-    filasCopia: Record<string, Fila[]>,
-    registro: VehiculoEstacionado
-  ) {
-    const filasZona = filasCopia[registro.zonaId];
-    if (!filasZona) return;
-    const letra = registro.cajonNombre.charAt(0);
-    const numero = parseInt(registro.cajonNombre.slice(1), 10) - 1;
-    const fila = filasZona.find((f) => f.letra === letra);
-    if (fila && numero >= 0 && numero < fila.cajones.length) {
-      fila.cajones[numero] = registro.eraAccesible ? 2 : 0;
-    }
-  }
-
-  async function registrarIngresoEnZona(
+  // Registro de llegada anónimo: solo suma al conteo de la zona sin exponer qué carro ni quién se estacionó ahí
+  async function reportarLlegadaEnZona(
     zonaId: string,
-    matricula: string,
-    accesible: boolean
+    usuario: DatosUsuarioReporte
   ): Promise<ResultadoAccion> {
-    if (cargando || errorCarga) {
+    if (cargando) {
       return {
         ok: false,
-        error: errorCarga ?? "La disponibilidad todavía se está cargando.",
+        error: "La plataforma todavía está cargando los datos.",
       };
     }
 
-    const mat = matricula.trim().toUpperCase();
+    const mat = usuario.matricula.trim().toUpperCase();
     if (!mat) {
-      return { ok: false, error: "Matrícula inválida." };
+      return { ok: false, error: "Inicia sesión para reportar tu llegada." };
     }
-
-    const previo = vehiculosEstacionados[mat];
-    if (previo) {
-      return {
-        ok: false,
-        error: `El vehículo ${mat} ya está estacionado en ${previo.zonaNombre} (cajón ${previo.cajonNombre}). Registra primero su salida.`,
-      };
-    }
+    const token = hashAnonimoMatricula(mat);
 
     const zona = zonas.find((z) => z.id === zonaId);
     if (!zona) {
-      return { ok: false, error: "Zona no encontrada." };
+      return { ok: false, error: "Área de estacionamiento no encontrada." };
     }
 
-    const filasCopia = clonarFilas(filasPorZona);
-    const filasZona = filasCopia[zonaId];
-
-    // Busca primero cajón accesible si se solicitó, sino cajón normal (0)
-    let filaIdx = -1;
-    let colIdx = -1;
-    let eraAccesible = false;
-
-    const buscarValor = (valorBuscado: number) => {
-      for (let r = 0; r < filasZona.length; r++) {
-        for (let c = 0; c < filasZona[r].cajones.length; c++) {
-          if (filasZona[r].cajones[c] === valorBuscado) {
-            filaIdx = r;
-            colIdx = c;
-            return true;
-          }
-        }
-      }
-      return false;
-    };
-
-    if (accesible) {
-      if (buscarValor(2)) {
-        eraAccesible = true;
-      } else {
-        buscarValor(0);
-      }
-    } else {
-      buscarValor(0);
-    }
-
-    if (filaIdx === -1) {
+    if (zona.estaLleno) {
       return {
         ok: false,
-        error: `${zona.nombre} no tiene cajones disponibles en este momento.`,
+        error: `El estacionamiento del ${zona.nombre} fue reportado como "LLENO" por la comunidad. Si encontraste un lugar libre, primero presiona "Ya hay espacio disponible" o elige otra zona.`,
       };
     }
 
-    const cajonNombre = `${filasZona[filaIdx].letra}${colIdx + 1}`;
-    filasZona[filaIdx].cajones[colIdx] = 1;
+    const estadosCopia = clonarEstados(estadosPorZona);
+    const activosCopia = { ...vehiculosEstacionados };
+    const previo = activosCopia[token];
+
+    if (previo && previo.zonaId === zonaId) {
+      return {
+        ok: false,
+        error: `Ya registraste tu llegada en el ${zona.nombre}.`,
+      };
+    }
+
+    if (previo && estadosCopia[previo.zonaId]) {
+      const estPrevio = estadosCopia[previo.zonaId];
+      estPrevio.personasEnElLugar = Math.max(
+        0,
+        estPrevio.personasEnElLugar - 1
+      );
+      estPrevio.estaLleno = false;
+    }
+
+    const estadoDestino = estadosCopia[zonaId];
+    const nuevoConteo = estadoDestino.personasEnElLugar + 1;
+    estadoDestino.personasEnElLugar = nuevoConteo;
+    estadoDestino.maximoRegistrado = Math.max(
+      estadoDestino.maximoRegistrado,
+      nuevoConteo
+    );
 
     const hora = horaActual();
-    const nuevoRegistro: VehiculoEstacionado = {
-      matricula: mat,
+    const frase = formatearFraseLlegada(zona.nombre);
+
+    activosCopia[token] = {
+      tokenAnonimo: token,
       zonaId,
       zonaNombre: zona.nombre,
-      cajonNombre,
-      eraAccesible,
+      fraseReporte: frase,
       horaIngreso: hora,
     };
 
-    const nuevosActivos = {
-      ...vehiculosEstacionados,
-      [mat]: nuevoRegistro,
-    };
-
-    const nuevoMov: MovimientoEstacionamiento = {
-      id: `${Date.now()}-${mat}`,
-      tipo: "ENTRADA",
-      matricula: mat,
-      zonaId,
-      zonaNombre: zona.nombre,
-      cajonNombre,
-      hora,
-    };
-
-    await persistir(
-      filasCopia,
-      nuevosActivos,
-      [nuevoMov, ...historial].slice(0, 30)
-    );
+    await persistir(estadosCopia, activosCopia, reportesMalEstacionado);
 
     return {
       ok: true,
       zonaId,
       zonaNombre: zona.nombre,
-      cajonNombre,
-      mensaje: `Entrada registrada en ${zona.nombre}, cajón ${cajonNombre}.`,
+      mensaje: `Llegada registrada: "${frase}" · Personas en el lugar: ${nuevoConteo} (Tu vehículo no se muestra públicamente por seguridad).`,
     };
   }
 
-  async function ocuparCajonEspecifico(
+  async function reportarCupoLleno(
     zonaId: string,
-    cajonNombre: string,
-    matricula: string
+    usuario: DatosUsuarioReporte
   ): Promise<ResultadoAccion> {
-    if (cargando || errorCarga) {
+    if (cargando) {
       return {
         ok: false,
-        error: errorCarga ?? "La disponibilidad todavía se está cargando.",
+        error: "La plataforma todavía está cargando los datos.",
       };
     }
 
-    const mat = matricula.trim().toUpperCase();
     const zona = zonas.find((z) => z.id === zonaId);
     if (!zona) {
-      return { ok: false, error: "Zona no encontrada." };
+      return { ok: false, error: "Área de estacionamiento no encontrada." };
     }
 
-    const filasCopia = clonarFilas(filasPorZona);
-    const filasZona = filasCopia[zonaId];
-    const letra = cajonNombre.charAt(0);
-    const colIdx = parseInt(cajonNombre.slice(1), 10) - 1;
-    const fila = filasZona.find((f) => f.letra === letra);
-
-    if (!fila || colIdx < 0 || colIdx >= fila.cajones.length) {
-      return { ok: false, error: "Cajón inválido." };
-    }
-
-    const valorActual = fila.cajones[colIdx];
-    if (valorActual === 1) {
-      return { ok: false, error: "Ese cajón ya está ocupado." };
-    }
-
-    // Si ya tenía un cajón asignado antes, lo libera primero
-    const previo = vehiculosEstacionados[mat];
-    if (previo) {
-      liberarEnMapa(filasCopia, previo);
-    }
-
-    const eraAccesible = valorActual === 2;
-    fila.cajones[colIdx] = 1;
-
+    const estadosCopia = clonarEstados(estadosPorZona);
+    const estadoZona = estadosCopia[zonaId];
     const hora = horaActual();
-    const nuevosActivos: Record<string, VehiculoEstacionado> = {
-      ...vehiculosEstacionados,
-      [mat]: {
-        matricula: mat,
-        zonaId,
-        zonaNombre: zona.nombre,
-        cajonNombre,
-        eraAccesible,
-        horaIngreso: hora,
-      },
-    };
 
-    const nuevoMov: MovimientoEstacionamiento = {
-      id: `${Date.now()}-${mat}`,
-      tipo: "ENTRADA",
-      matricula: mat,
-      zonaId,
-      zonaNombre: zona.nombre,
-      cajonNombre,
+    estadoZona.estaLleno = true;
+
+    const capacidadObservada = Math.max(
+      estadoZona.personasEnElLugar,
+      estadoZona.capacidadRealDetectada ?? 0,
+      1
+    );
+    estadoZona.capacidadRealDetectada =
+      estadoZona.personasEnElLugar > 0
+        ? estadoZona.personasEnElLugar
+        : capacidadObservada;
+    estadoZona.maximoRegistrado = Math.max(
+      estadoZona.maximoRegistrado,
+      estadoZona.personasEnElLugar
+    );
+    estadoZona.ultimoReporteLleno = {
+      reportadoPor: "Comunidad UTCH",
+      rol: usuario.rol,
       hora,
+      autosAlMomento: estadoZona.personasEnElLugar,
     };
 
     await persistir(
-      filasCopia,
-      nuevosActivos,
-      [nuevoMov, ...historial].slice(0, 30)
+      estadosCopia,
+      vehiculosEstacionados,
+      reportesMalEstacionado
     );
 
     return {
       ok: true,
       zonaId,
       zonaNombre: zona.nombre,
-      cajonNombre,
-      mensaje: `Cajón ${cajonNombre} asignado en ${zona.nombre}.`,
+      mensaje: `Aviso enviado: El estacionamiento del ${zona.nombre.toLowerCase()} ha sido marcado como "LLENO" (Capacidad real registrada: ${estadoZona.capacidadRealDetectada} vehículo(s)).`,
+    };
+  }
+
+  async function reportarEspacioDisponible(
+    zonaId: string,
+    _usuario: DatosUsuarioReporte
+  ): Promise<ResultadoAccion> {
+    const zona = zonas.find((z) => z.id === zonaId);
+    if (!zona) {
+      return { ok: false, error: "Área de estacionamiento no encontrada." };
+    }
+
+    const estadosCopia = clonarEstados(estadosPorZona);
+    const estadoZona = estadosCopia[zonaId];
+    estadoZona.estaLleno = false;
+
+    await persistir(
+      estadosCopia,
+      vehiculosEstacionados,
+      reportesMalEstacionado
+    );
+
+    return {
+      ok: true,
+      zonaId,
+      zonaNombre: zona.nombre,
+      mensaje: `El estacionamiento del ${zona.nombre.toLowerCase()} volvió a marcarse con espacios disponibles.`,
     };
   }
 
   async function registrarSalidaVehiculo(
     matricula: string
   ): Promise<ResultadoAccion> {
-    if (cargando || errorCarga) {
+    if (cargando) {
       return {
         ok: false,
-        error: errorCarga ?? "La disponibilidad todavía se está cargando.",
+        error: "La plataforma todavía está cargando los datos.",
       };
     }
 
-    const mat = matricula.trim().toUpperCase();
-    const registro = vehiculosEstacionados[mat];
+    const token = hashAnonimoMatricula(matricula);
+    const registro = vehiculosEstacionados[token];
     if (!registro) {
       return {
         ok: false,
-        error: `No hay ningún vehículo activo registrado con la matrícula ${mat}.`,
+        error: "No tienes una llegada activa registrada en este momento.",
       };
     }
 
-    const filasCopia = clonarFilas(filasPorZona);
-    liberarEnMapa(filasCopia, registro);
+    const estadosCopia = clonarEstados(estadosPorZona);
+    const estadoZona = estadosCopia[registro.zonaId];
+    if (estadoZona) {
+      estadoZona.personasEnElLugar = Math.max(
+        0,
+        estadoZona.personasEnElLugar - 1
+      );
+      estadoZona.estaLleno = false;
+    }
 
     const nuevosActivos = { ...vehiculosEstacionados };
-    delete nuevosActivos[mat];
+    delete nuevosActivos[token];
 
-    const nuevoMov: MovimientoEstacionamiento = {
-      id: `${Date.now()}-${mat}`,
-      tipo: "SALIDA",
-      matricula: mat,
-      zonaId: registro.zonaId,
-      zonaNombre: registro.zonaNombre,
-      cajonNombre: registro.cajonNombre,
-      hora: horaActual(),
-    };
+    const nuevoConteo = estadoZona ? estadoZona.personasEnElLugar : 0;
 
-    await persistir(
-      filasCopia,
-      nuevosActivos,
-      [nuevoMov, ...historial].slice(0, 30)
-    );
+    await persistir(estadosCopia, nuevosActivos, reportesMalEstacionado);
 
     return {
       ok: true,
       zonaId: registro.zonaId,
       zonaNombre: registro.zonaNombre,
-      cajonNombre: registro.cajonNombre,
-      mensaje: `Salida registrada. Cajón ${registro.cajonNombre} liberado en ${registro.zonaNombre}.`,
+      mensaje: `Salida registrada del ${registro.zonaNombre}. Personas en el lugar: ${nuevoConteo}.`,
+    };
+  }
+
+  // Reporte público con foto cuando alguien se estacionó mal
+  async function publicarReporteMalEstacionado(datos: {
+    zonaId: string;
+    motivo: string;
+    fotoUri: string;
+    rolReportante: string;
+  }): Promise<ResultadoAccion> {
+    const zona = zonas.find((z) => z.id === datos.zonaId);
+    if (!zona) {
+      return { ok: false, error: "Selecciona el estacionamiento o edificio." };
+    }
+
+    const motivoLimpio = datos.motivo.trim();
+    if (motivoLimpio.length < 4) {
+      return {
+        ok: false,
+        error:
+          "Describe brevemente cómo se estacionó mal (ej. Ocupando dos cajones o bloqueando el paso).",
+      };
+    }
+
+    if (!datos.fotoUri) {
+      return {
+        ok: false,
+        error:
+          "Debes tomar o adjuntar una foto del vehículo mal estacionado para publicar el reporte.",
+      };
+    }
+
+    const nuevoReporte: ReporteMalEstacionado = {
+      id: `${Date.now()}-${datos.zonaId}`,
+      zonaId: zona.id,
+      zonaNombre: zona.nombre,
+      motivo: motivoLimpio,
+      fotoUri: datos.fotoUri,
+      rolReportante: datos.rolReportante,
+      hora: horaActual(),
+    };
+
+    const actualizados = [nuevoReporte, ...reportesMalEstacionado].slice(0, 25);
+    await persistir(estadosPorZona, vehiculosEstacionados, actualizados);
+
+    return {
+      ok: true,
+      zonaId: zona.id,
+      zonaNombre: zona.nombre,
+      mensaje: `Reporte con foto publicado en ${zona.nombre} para toda la comunidad.`,
+    };
+  }
+
+  async function sumarAutoComunidad(zonaId: string): Promise<ResultadoAccion> {
+    const zona = zonas.find((z) => z.id === zonaId);
+    if (!zona) {
+      return { ok: false, error: "Área de estacionamiento no encontrada." };
+    }
+
+    if (zona.estaLleno) {
+      return {
+        ok: false,
+        error: `El estacionamiento del ${zona.nombre.toLowerCase()} ya está marcado como "LLENO".`,
+      };
+    }
+
+    const estadosCopia = clonarEstados(estadosPorZona);
+    const estadoZona = estadosCopia[zonaId];
+    const nuevoConteo = estadoZona.personasEnElLugar + 1;
+    estadoZona.personasEnElLugar = nuevoConteo;
+    estadoZona.maximoRegistrado = Math.max(
+      estadoZona.maximoRegistrado,
+      nuevoConteo
+    );
+
+    await persistir(
+      estadosCopia,
+      vehiculosEstacionados,
+      reportesMalEstacionado
+    );
+
+    return {
+      ok: true,
+      zonaId,
+      zonaNombre: zona.nombre,
+      mensaje: `Llegada anónima sumada en ${zona.nombre} · Personas en el lugar: ${nuevoConteo}`,
     };
   }
 
   async function reiniciarEstacionamientos() {
-    const iniciales = crearFilasIniciales();
+    const iniciales = crearEstadosIniciales();
     await persistir(iniciales, {}, []);
   }
 
@@ -523,13 +609,16 @@ export function EstacionamientoProvider({ children }: { children: ReactNode }) {
         zonas,
         alertasSaturacion,
         vehiculosEstacionados,
-        historial,
+        reportesMalEstacionado,
         cargando,
         errorCarga,
         obtenerCajonDeUsuario,
-        registrarIngresoEnZona,
-        ocuparCajonEspecifico,
+        reportarLlegadaEnZona,
+        reportarCupoLleno,
+        reportarEspacioDisponible,
         registrarSalidaVehiculo,
+        publicarReporteMalEstacionado,
+        sumarAutoComunidad,
         reiniciarEstacionamientos,
       }}
     >

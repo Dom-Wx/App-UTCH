@@ -73,7 +73,7 @@ export default function MapaCampus({ zonaElegida, onElegir }: Props) {
           <View style={styles.lineaAmarillaHorizontal} />
         </View>
 
-        {/* Bulevar Central UTCH (conecta Acceso 1 -> Glorieta 1 -> Glorieta 2 -> Rectoría) */}
+        {/* Bulevar Central UTCH */}
         <View
           style={[
             styles.calleAsfalto,
@@ -83,7 +83,7 @@ export default function MapaCampus({ zonaElegida, onElegir }: Props) {
           <View style={styles.lineaCarrilHorizontal} />
         </View>
 
-        {/* Vialidad Norte (hacia Edificios N, O, P y Estudiantes Norte) */}
+        {/* Vialidad Norte */}
         <View
           style={[
             styles.calleAsfalto,
@@ -91,7 +91,7 @@ export default function MapaCampus({ zonaElegida, onElegir }: Props) {
           ]}
         />
 
-        {/* Circuito poniente (rodea B, A, Q, H, C) */}
+        {/* Circuito poniente */}
         <View
           style={[
             styles.calleAsfalto,
@@ -109,11 +109,11 @@ export default function MapaCampus({ zonaElegida, onElegir }: Props) {
         <View
           style={[
             styles.calleAsfalto,
-            { left: px(39), top: py(44), width: px(3.5), height: py(43) },
+            { left: px(37.5), top: py(44), width: px(3.5), height: py(43) },
           ]}
         />
 
-        {/* Vialidad oriente (baja de Glorieta 2 hacia TI, Industrial, Estudiantes Sur y Acceso 2) */}
+        {/* Vialidad oriente */}
         <View
           style={[
             styles.calleAsfalto,
@@ -121,7 +121,7 @@ export default function MapaCampus({ zonaElegida, onElegir }: Props) {
           ]}
         />
 
-        {/* Glorieta 1 (Acceso 1 / Poniente) */}
+        {/* Glorieta 1 */}
         <View
           style={[
             styles.glorietaAsfalto,
@@ -146,7 +146,7 @@ export default function MapaCampus({ zonaElegida, onElegir }: Props) {
           />
         </View>
 
-        {/* Glorieta 2 (Centro / TI) */}
+        {/* Glorieta 2 */}
         <View
           style={[
             styles.glorietaAsfalto,
@@ -171,24 +171,19 @@ export default function MapaCampus({ zonaElegida, onElegir }: Props) {
           />
         </View>
 
-        {/* ==================== ESTACIONAMIENTOS INTERACTIVOS ==================== */}
+        {/* ==================== ESTACIONAMIENTOS COLABORATIVOS ==================== */}
         {zonas.map((zona) => {
-          let colorPrincipal = colores.azulAccesible;
-          let colorFondo = "rgba(2, 132, 199, 0.18)";
+          let colorPrincipal = colores.verdeUtch;
+          let colorFondo = "rgba(0, 104, 55, 0.20)";
 
-          if (zona.tipo === "Personal") {
-            colorPrincipal = colores.verdeUtch;
-            colorFondo = "rgba(0, 104, 55, 0.18)";
-          }
-
-          if (zona.nivelAlerta === "casi_lleno") {
+          if (zona.nivelAlerta === "concurrido") {
             colorPrincipal = colores.naranjaAlerta;
-            colorFondo = "rgba(217, 119, 6, 0.22)";
+            colorFondo = "rgba(217, 119, 6, 0.24)";
           }
 
-          if (zona.nivelAlerta === "lleno") {
+          if (zona.estaLleno) {
             colorPrincipal = colores.rojo;
-            colorFondo = "rgba(217, 4, 41, 0.22)";
+            colorFondo = "rgba(217, 4, 41, 0.25)";
           }
 
           const seleccionada = zona.id === zonaElegida;
@@ -211,7 +206,7 @@ export default function MapaCampus({ zonaElegida, onElegir }: Props) {
                 },
               ]}
             >
-              {/* Líneas decorativas de cajones de estacionamiento */}
+              {/* Líneas decorativas de área de estacionamiento */}
               <View style={styles.rejillaCajones}>
                 <View
                   style={[
@@ -233,16 +228,20 @@ export default function MapaCampus({ zonaElegida, onElegir }: Props) {
                 />
               </View>
 
-              {/* Pastilla con el conteo en vivo */}
+              {/* Pastilla con el conteo colaborativo en vivo */}
               <View
                 style={[
                   styles.pastillaZona,
                   { backgroundColor: colorPrincipal },
                 ]}
               >
-                <Text style={styles.pastillaCodigo}>{zona.id}</Text>
+                <Text style={styles.pastillaCodigo}>
+                  {zona.nombreCortoMapa}
+                </Text>
                 <Text style={styles.pastillaNumero}>
-                  {zona.libres === 0 ? "LLENO" : `${zona.libres} lib`}
+                  {zona.estaLleno
+                    ? "LLENO"
+                    : `${zona.personasEnElLugar} ${zona.personasEnElLugar === 1 ? "auto" : "autos"}`}
                 </Text>
               </View>
             </TouchableOpacity>
@@ -274,7 +273,7 @@ export default function MapaCampus({ zonaElegida, onElegir }: Props) {
           </View>
         ))}
 
-        {/* ==================== CASETAS DE ACCESO (PLUMas) ==================== */}
+        {/* ==================== CASETAS DE ACCESO ==================== */}
         <View style={[styles.caseta, { left: px(9), top: py(36) }]}>
           <View style={styles.casetaPunto} />
           <Text style={styles.casetaTexto}>ACCESO 1</Text>
@@ -292,16 +291,10 @@ export default function MapaCampus({ zonaElegida, onElegir }: Props) {
           <View
             style={[
               styles.leyendaColor,
-              { backgroundColor: colores.azulAccesible },
+              { backgroundColor: colores.verdeUtch },
             ]}
           />
-          <Text style={styles.leyendaTexto}>Estudiantes (Azul)</Text>
-        </View>
-        <View style={styles.leyendaItem}>
-          <View
-            style={[styles.leyendaColor, { backgroundColor: colores.verdeUtch }]}
-          />
-          <Text style={styles.leyendaTexto}>Personal (Verde)</Text>
+          <Text style={styles.leyendaTexto}>Con espacios disponibles</Text>
         </View>
         <View style={styles.leyendaItem}>
           <View
@@ -310,11 +303,15 @@ export default function MapaCampus({ zonaElegida, onElegir }: Props) {
               { backgroundColor: colores.naranjaAlerta },
             ]}
           />
-          <Text style={styles.leyendaTexto}>+80% Casi lleno</Text>
+          <Text style={styles.leyendaTexto}>Alta afluencia</Text>
         </View>
         <View style={styles.leyendaItem}>
-          <View style={[styles.leyendaColor, { backgroundColor: colores.rojo }]} />
-          <Text style={styles.leyendaTexto}>100% Lleno</Text>
+          <View
+            style={[styles.leyendaColor, { backgroundColor: colores.rojo }]}
+          />
+          <Text style={styles.leyendaTexto}>
+            Reportado como &quot;Lleno&quot;
+          </Text>
         </View>
       </View>
     </View>
@@ -421,12 +418,12 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   pastillaCodigo: {
-    fontSize: 9,
+    fontSize: 8.5,
     fontWeight: "bold",
     color: "#E2E8F0",
   },
   pastillaNumero: {
-    fontSize: 11,
+    fontSize: 10.5,
     fontWeight: "bold",
     color: colores.blanco,
   },
